@@ -16,6 +16,7 @@ router.get('/', (req, res) => {
     const result = orderService.getOrders({
       status: req.query.status,
       gameType: req.query.gameType,
+      keyword: req.query.keyword,
       startDate: req.query.startDate,
       endDate: req.query.endDate,
       page: req.query.page,
@@ -24,6 +25,7 @@ router.get('/', (req, res) => {
 
     res.json(paginatedResponse(result.list, result.total, result.page, result.pageSize));
   } catch (err) {
+    console.error('获取订单列表失败:', err);
     res.json(response(500, '获取订单列表失败'));
   }
 });
@@ -46,17 +48,25 @@ router.get('/:id', (req, res) => {
 // POST / - 创建订单
 router.post('/', (req, res) => {
   try {
-    const { game_type, boss_kook_id, boss_wechat, amount } = req.body;
+    const { 
+      vipId, vipName, vipPhone,
+      gameType, currentTier, targetTier, 
+      price, remark 
+    } = req.body;
 
-    if (!game_type || !amount) {
+    if (!gameType || !price) {
       return res.json(response(400, '游戏类型和金额不能为空'));
     }
 
     const order = orderService.createOrder({
-      game_type,
-      boss_kook_id,
-      boss_wechat,
-      amount
+      vipId,
+      vipName,
+      vipPhone,
+      game_type: gameType,
+      current_tier: currentTier,
+      target_tier: targetTier,
+      amount: price,
+      remark
     });
 
     // WebSocket通知
@@ -67,6 +77,7 @@ router.post('/', (req, res) => {
 
     res.json(response(200, '订单创建成功', order));
   } catch (err) {
+    console.error('创建订单失败:', err);
     res.json(response(500, '创建订单失败'));
   }
 });
@@ -99,9 +110,9 @@ router.put('/:id', (req, res) => {
 // POST /:id/assign - 派单
 router.post('/:id/assign', (req, res) => {
   try {
-    const { player_ids } = req.body;
+    const { playerId, playerName } = req.body;
 
-    if (!player_ids || !Array.isArray(player_ids) || player_ids.length === 0) {
+    if (!playerId) {
       return res.json(response(400, '请选择打手'));
     }
 
@@ -113,7 +124,7 @@ router.post('/:id/assign', (req, res) => {
       return res.json(response(400, '只能对待派单订单进行派单'));
     }
 
-    const updated = orderService.assignOrder(req.params.id, player_ids, order.version);
+    const updated = orderService.assignOrder(req.params.id, playerId, playerName, order.version);
 
     // WebSocket通知
     const wss = getWebSocketServer();
@@ -145,9 +156,38 @@ router.post('/:id/complete', (req, res) => {
 
     // 自动创建结算
     try {
-      settlementService.batchCreateSettlements(req.params.id);
+      settlementService.createSettlement(req.params.id);
     } catch (settleErr) {
       console.error('创建结算失败:', settleErr);
+    }
+
+    // 更新VIP累计消费
+    if (order.vip_id) {
+      try {
+        const db = getDatabase();
+        db.run(`
+          UPDATE vips 
+          SET total_spent = total_spent + ?,
+              total_orders = total_orders + 1
+          WHERE id = ?
+        `, order.amount, order.vip_id);
+      } catch (e) {
+        console.error('更新VIP消费失败:', e);
+      }
+    }
+
+    // 更新打手完成订单数
+    if (order.player_ids) {
+      try {
+        const db = getDatabase();
+        db.run(`
+          UPDATE players 
+          SET completed_orders = completed_orders + 1
+          WHERE id = ?
+        `, order.player_ids);
+      } catch (e) {
+        console.error('更新打手订单数失败:', e);
+      }
     }
 
     // WebSocket通知

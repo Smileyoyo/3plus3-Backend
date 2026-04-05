@@ -11,9 +11,25 @@ class OrderService {
     const orderNo = generateOrderNo();
     
     const result = db.run(`
-      INSERT INTO orders (order_no, game_type, boss_kook_id, boss_wechat, amount, status)
-      VALUES (?, ?, ?, ?, ?, 'pending')
-    `, orderNo, data.game_type, data.boss_kook_id || null, data.boss_wechat || null, data.amount);
+      INSERT INTO orders (
+        order_no, game_type, vip_id, vip_name, vip_phone,
+        boss_kook_id, boss_wechat, current_tier, target_tier,
+        amount, remark, status
+      )
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')
+    `, 
+      orderNo, 
+      data.game_type, 
+      data.vipId || null, 
+      data.vipName || null, 
+      data.vipPhone || null,
+      data.boss_kook_id || null, 
+      data.boss_wechat || null,
+      data.current_tier || null,
+      data.target_tier || null,
+      data.amount,
+      data.remark || null
+    );
     
     return this.getOrderById(result.lastInsertRowid);
   }
@@ -33,6 +49,11 @@ class OrderService {
     if (filters.gameType) {
       sql += ' AND game_type = ?';
       params.push(filters.gameType);
+    }
+    if (filters.keyword) {
+      sql += ' AND (order_no LIKE ? OR vip_name LIKE ? OR vip_phone LIKE ?)';
+      const keywordPattern = `%${filters.keyword}%`;
+      params.push(keywordPattern, keywordPattern, keywordPattern);
     }
     if (filters.startDate) {
       sql += ' AND created_at >= ?';
@@ -63,13 +84,25 @@ class OrderService {
     return {
       list: orders.map(o => ({
         ...o,
-        player_ids: parseJsonField(o.player_ids)
+        player_ids: parseJsonField(o.player_ids),
+        price: o.amount, // 兼容前端字段
+        vipLevel: this.getVIPLevel(o.vip_id)
       })),
       total,
       page,
       pageSize,
       totalPages: Math.ceil(total / pageSize)
     };
+  }
+
+  /**
+   * 获取VIP等级
+   */
+  getVIPLevel(vipId) {
+    if (!vipId) return null;
+    const db = getDatabase();
+    const vip = db.get('SELECT level FROM vips WHERE id = ?', vipId);
+    return vip ? vip.level : null;
   }
 
   /**
@@ -80,6 +113,7 @@ class OrderService {
     const order = db.get('SELECT * FROM orders WHERE id = ?', id);
     if (order) {
       order.player_ids = parseJsonField(order.player_ids);
+      order.price = order.amount;
     }
     return order;
   }
@@ -96,13 +130,25 @@ class OrderService {
       updateFields.push('game_type = ?');
       params.push(data.game_type);
     }
-    if (data.boss_kook_id !== undefined) {
-      updateFields.push('boss_kook_id = ?');
-      params.push(data.boss_kook_id);
+    if (data.vip_id !== undefined) {
+      updateFields.push('vip_id = ?');
+      params.push(data.vip_id);
     }
-    if (data.boss_wechat !== undefined) {
-      updateFields.push('boss_wechat = ?');
-      params.push(data.boss_wechat);
+    if (data.vip_name !== undefined) {
+      updateFields.push('vip_name = ?');
+      params.push(data.vip_name);
+    }
+    if (data.vip_phone !== undefined) {
+      updateFields.push('vip_phone = ?');
+      params.push(data.vip_phone);
+    }
+    if (data.current_tier !== undefined) {
+      updateFields.push('current_tier = ?');
+      params.push(data.current_tier);
+    }
+    if (data.target_tier !== undefined) {
+      updateFields.push('target_tier = ?');
+      params.push(data.target_tier);
     }
     if (data.amount !== undefined) {
       updateFields.push('amount = ?');
@@ -114,7 +160,11 @@ class OrderService {
     }
     if (data.player_ids !== undefined) {
       updateFields.push('player_ids = ?');
-      params.push(JSON.stringify(data.player_ids));
+      params.push(Array.isArray(data.player_ids) ? JSON.stringify(data.player_ids) : data.player_ids);
+    }
+    if (data.player_name !== undefined) {
+      updateFields.push('player_name = ?');
+      params.push(data.player_name);
     }
     if (data.assign_time !== undefined) {
       updateFields.push('assign_time = ?');
@@ -127,6 +177,10 @@ class OrderService {
     if (data.cancel_reason !== undefined) {
       updateFields.push('cancel_reason = ?');
       params.push(data.cancel_reason);
+    }
+    if (data.remark !== undefined) {
+      updateFields.push('remark = ?');
+      params.push(data.remark);
     }
 
     updateFields.push('version = version + 1');
@@ -149,10 +203,11 @@ class OrderService {
   /**
    * 派单
    */
-  assignOrder(id, playerIds, expectedVersion) {
+  assignOrder(id, playerId, playerName, expectedVersion) {
     return this.updateOrder(id, {
       status: 'assigned',
-      player_ids: playerIds,
+      player_ids: playerId,
+      player_name: playerName,
       assign_time: new Date().toISOString()
     }, expectedVersion);
   }
@@ -174,15 +229,12 @@ class OrderService {
 
     // 更新打手统计
     if (order.player_ids) {
-      const playerIds = parseJsonField(order.player_ids);
-      playerIds.forEach(playerId => {
-        db.run(`
-          UPDATE players 
-          SET total_orders = total_orders + 1,
-              pending_settlement = pending_settlement + ?
-          WHERE id = ?
-        `, order.amount / playerIds.length, playerId);
-      });
+      db.run(`
+        UPDATE players 
+        SET total_orders = total_orders + 1,
+            pending_settlement = pending_settlement + ?
+        WHERE id = ?
+      `, order.amount, order.player_ids);
     }
 
     return result;

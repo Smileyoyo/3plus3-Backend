@@ -47,18 +47,32 @@ async function initDatabase() {
     CREATE TABLE IF NOT EXISTS players (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       nickname TEXT NOT NULL,
+      phone TEXT,
+      game_id TEXT,
+      game_tier TEXT,
       kook_id TEXT,
       wechat TEXT,
       avatar TEXT,
       status TEXT DEFAULT 'offline',
       skills TEXT,
       total_orders INTEGER DEFAULT 0,
+      completed_orders INTEGER DEFAULT 0,
+      rating REAL DEFAULT 0,
       total_earnings REAL DEFAULT 0,
+      balance REAL DEFAULT 0,
       pending_settlement REAL DEFAULT 0,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
     )
   `);
+
+  // 添加新字段（如果不存在）
+  try { db.run('ALTER TABLE players ADD COLUMN phone TEXT'); } catch (e) {}
+  try { db.run('ALTER TABLE players ADD COLUMN game_id TEXT'); } catch (e) {}
+  try { db.run('ALTER TABLE players ADD COLUMN game_tier TEXT'); } catch (e) {}
+  try { db.run('ALTER TABLE players ADD COLUMN completed_orders INTEGER DEFAULT 0'); } catch (e) {}
+  try { db.run('ALTER TABLE players ADD COLUMN rating REAL DEFAULT 0'); } catch (e) {}
+  try { db.run('ALTER TABLE players ADD COLUMN balance REAL DEFAULT 0'); } catch (e) {}
 
   // VIP表
   db.run(`
@@ -71,13 +85,27 @@ async function initDatabase() {
       level INTEGER DEFAULT 1,
       balance REAL DEFAULT 0,
       total_recharge REAL DEFAULT 0,
+      total_spent REAL DEFAULT 0,
       total_orders INTEGER DEFAULT 0,
       tags TEXT,
       status TEXT DEFAULT 'active',
+      remark TEXT,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
     )
   `);
+
+  // 添加 total_spent 字段（如果不存在）
+  try {
+    db.run('ALTER TABLE vips ADD COLUMN total_spent REAL DEFAULT 0');
+  } catch (e) {
+    // 字段已存在，忽略
+  }
+  try {
+    db.run('ALTER TABLE vips ADD COLUMN remark TEXT');
+  } catch (e) {
+    // 字段已存在，忽略
+  }
 
   // 订单表
   db.run(`
@@ -85,19 +113,35 @@ async function initDatabase() {
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       order_no TEXT UNIQUE NOT NULL,
       game_type TEXT NOT NULL,
+      vip_id INTEGER,
+      vip_name TEXT,
+      vip_phone TEXT,
       boss_kook_id TEXT,
       boss_wechat TEXT,
+      current_tier TEXT,
+      target_tier TEXT,
       amount REAL NOT NULL,
       status TEXT DEFAULT 'pending',
       player_ids TEXT,
+      player_name TEXT,
       assign_time DATETIME,
       complete_time DATETIME,
       cancel_reason TEXT,
+      remark TEXT,
       version INTEGER DEFAULT 1,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
     )
   `);
+
+  // 添加新字段（如果不存在）
+  try { db.run('ALTER TABLE orders ADD COLUMN vip_id INTEGER'); } catch (e) {}
+  try { db.run('ALTER TABLE orders ADD COLUMN vip_name TEXT'); } catch (e) {}
+  try { db.run('ALTER TABLE orders ADD COLUMN vip_phone TEXT'); } catch (e) {}
+  try { db.run('ALTER TABLE orders ADD COLUMN current_tier TEXT'); } catch (e) {}
+  try { db.run('ALTER TABLE orders ADD COLUMN target_tier TEXT'); } catch (e) {}
+  try { db.run('ALTER TABLE orders ADD COLUMN player_name TEXT'); } catch (e) {}
+  try { db.run('ALTER TABLE orders ADD COLUMN remark TEXT'); } catch (e) {}
 
   // 结算表
   db.run(`

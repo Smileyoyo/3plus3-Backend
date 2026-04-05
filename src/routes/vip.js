@@ -21,7 +21,7 @@ router.get('/levels', (req, res) => {
 router.get('/', (req, res) => {
   try {
     const db = getDatabase();
-    const { level, status, search } = req.query;
+    const { level, keyword } = req.query;
     
     let sql = 'SELECT * FROM vips WHERE 1=1';
     const params = [];
@@ -30,14 +30,10 @@ router.get('/', (req, res) => {
       sql += ' AND level = ?';
       params.push(level);
     }
-    if (status) {
-      sql += ' AND status = ?';
-      params.push(status);
-    }
-    if (search) {
-      sql += ' AND (nickname LIKE ? OR kook_id LIKE ? OR wechat LIKE ? OR phone LIKE ?)';
-      const searchPattern = `%${search}%`;
-      params.push(searchPattern, searchPattern, searchPattern, searchPattern);
+    if (keyword) {
+      sql += ' AND (nickname LIKE ? OR phone LIKE ?)';
+      const searchPattern = `%${keyword}%`;
+      params.push(searchPattern, searchPattern);
     }
 
     sql += ' ORDER BY level DESC, created_at DESC';
@@ -58,13 +54,17 @@ router.get('/', (req, res) => {
       vips.map(v => ({
         ...v,
         tags: parseJsonField(v.tags),
-        level_info: config.vipLevels[v.level]
+        totalRecharge: v.total_recharge,
+        totalSpent: v.total_spent || 0,
+        totalOrders: v.total_orders,
+        levelInfo: config.vipLevels[v.level]
       })),
       total,
       page,
       pageSize
     ));
   } catch (err) {
+    console.error('获取VIP列表失败:', err);
     res.json(response(500, '获取VIP列表失败'));
   }
 });
@@ -80,17 +80,23 @@ router.get('/:id', (req, res) => {
     }
 
     vip.tags = parseJsonField(vip.tags);
-    vip.level_info = config.vipLevels[vip.level];
+    vip.levelInfo = config.vipLevels[vip.level];
 
     // 获取该VIP的订单记录
     const orders = db.all(`
       SELECT * FROM orders
-      WHERE boss_kook_id = ? OR boss_wechat = ?
+      WHERE vip_id = ?
       ORDER BY created_at DESC
       LIMIT 10
-    `, vip.kook_id, vip.wechat);
+    `, vip.id);
 
-    res.json(response(200, '获取成功', { ...vip, orders }));
+    res.json(response(200, '获取成功', { 
+      ...vip, 
+      totalRecharge: vip.total_recharge,
+      totalSpent: vip.total_spent || 0,
+      totalOrders: vip.total_orders,
+      orders 
+    }));
   } catch (err) {
     res.json(response(500, '获取VIP详情失败'));
   }
@@ -100,23 +106,27 @@ router.get('/:id', (req, res) => {
 router.post('/', (req, res) => {
   try {
     const db = getDatabase();
-    const { nickname, kook_id, wechat, phone, level, tags } = req.body;
+    const { nickname, phone, level, balance, remark } = req.body;
 
     if (!nickname) {
       return res.json(response(400, '昵称不能为空'));
     }
 
     const result = db.run(`
-      INSERT INTO vips (nickname, kook_id, wechat, phone, level, tags)
+      INSERT INTO vips (nickname, phone, level, balance, remark, total_recharge)
       VALUES (?, ?, ?, ?, ?, ?)
-    `, nickname, kook_id, wechat, phone, level || 1, JSON.stringify(tags || []));
+    `, nickname, phone, level || 1, balance || 0, remark || null, balance || 0);
     
     const vip = db.get('SELECT * FROM vips WHERE id = ?', result.lastInsertRowid);
-    vip.tags = parseJsonField(vip.tags);
-    vip.level_info = config.vipLevels[vip.level];
 
-    res.json(response(200, 'VIP创建成功', vip));
+    res.json(response(200, 'VIP创建成功', {
+      ...vip,
+      totalRecharge: vip.total_recharge,
+      totalSpent: vip.total_spent || 0,
+      totalOrders: vip.total_orders
+    }));
   } catch (err) {
+    console.error('创建VIP失败:', err);
     res.json(response(500, '创建VIP失败'));
   }
 });
@@ -125,7 +135,7 @@ router.post('/', (req, res) => {
 router.put('/:id', (req, res) => {
   try {
     const db = getDatabase();
-    const { nickname, kook_id, wechat, phone, level, tags, status } = req.body;
+    const { nickname, phone, level, balance, remark, status } = req.body;
     const vip = db.get('SELECT * FROM vips WHERE id = ?', req.params.id);
     
     if (!vip) {
@@ -139,14 +149,6 @@ router.put('/:id', (req, res) => {
       updateFields.push('nickname = ?');
       params.push(nickname);
     }
-    if (kook_id !== undefined) {
-      updateFields.push('kook_id = ?');
-      params.push(kook_id);
-    }
-    if (wechat !== undefined) {
-      updateFields.push('wechat = ?');
-      params.push(wechat);
-    }
     if (phone !== undefined) {
       updateFields.push('phone = ?');
       params.push(phone);
@@ -155,9 +157,13 @@ router.put('/:id', (req, res) => {
       updateFields.push('level = ?');
       params.push(level);
     }
-    if (tags !== undefined) {
-      updateFields.push('tags = ?');
-      params.push(JSON.stringify(tags));
+    if (balance !== undefined) {
+      updateFields.push('balance = ?');
+      params.push(balance);
+    }
+    if (remark !== undefined) {
+      updateFields.push('remark = ?');
+      params.push(remark);
     }
     if (status !== undefined) {
       updateFields.push('status = ?');
@@ -170,10 +176,13 @@ router.put('/:id', (req, res) => {
     db.run(`UPDATE vips SET ${updateFields.join(', ')} WHERE id = ?`, ...params);
 
     const updated = db.get('SELECT * FROM vips WHERE id = ?', req.params.id);
-    updated.tags = parseJsonField(updated.tags);
-    updated.level_info = config.vipLevels[updated.level];
 
-    res.json(response(200, '更新成功', updated));
+    res.json(response(200, '更新成功', {
+      ...updated,
+      totalRecharge: updated.total_recharge,
+      totalSpent: updated.total_spent || 0,
+      totalOrders: updated.total_orders
+    }));
   } catch (err) {
     res.json(response(500, '更新VIP失败'));
   }
@@ -183,7 +192,7 @@ router.put('/:id', (req, res) => {
 router.post('/:id/recharge', (req, res) => {
   try {
     const db = getDatabase();
-    const { amount } = req.body;
+    const { amount, type } = req.body;
 
     if (!amount || amount <= 0) {
       return res.json(response(400, '请输入有效的充值金额'));
@@ -195,27 +204,64 @@ router.post('/:id/recharge', (req, res) => {
     }
 
     // 更新余额和累计充值
+    const newBalance = vip.balance + amount;
+    const newTotalRecharge = vip.total_recharge + amount;
+    
     db.run(`
       UPDATE vips 
-      SET balance = balance + ?,
-          total_recharge = total_recharge + ?,
+      SET balance = ?,
+          total_recharge = ?,
           updated_at = datetime('now')
       WHERE id = ?
-    `, amount, amount, req.params.id);
+    `, newBalance, newTotalRecharge, req.params.id);
 
     // 自动升级VIP等级
-    const newLevel = calculateVipLevel(vip.total_recharge + amount);
+    const newLevel = calculateVipLevel(newTotalRecharge);
     if (newLevel > vip.level) {
       db.run('UPDATE vips SET level = ? WHERE id = ?', newLevel, req.params.id);
     }
 
     const updated = db.get('SELECT * FROM vips WHERE id = ?', req.params.id);
-    updated.tags = parseJsonField(updated.tags);
-    updated.level_info = config.vipLevels[updated.level];
 
-    res.json(response(200, '充值成功', updated));
+    res.json(response(200, '充值成功', {
+      ...updated,
+      totalRecharge: updated.total_recharge,
+      totalSpent: updated.total_spent || 0,
+      totalOrders: updated.total_orders
+    }));
   } catch (err) {
+    console.error('充值失败:', err);
     res.json(response(500, '充值失败'));
+  }
+});
+
+// POST /:id/upgrade - VIP升级
+router.post('/:id/upgrade', (req, res) => {
+  try {
+    const db = getDatabase();
+    const { level } = req.body;
+
+    if (!level || level < 1 || level > 5) {
+      return res.json(response(400, '无效的等级'));
+    }
+
+    const vip = db.get('SELECT * FROM vips WHERE id = ?', req.params.id);
+    if (!vip) {
+      return res.json(response(404, 'VIP不存在'));
+    }
+
+    db.run('UPDATE vips SET level = ?, updated_at = datetime(\'now\') WHERE id = ?', level, req.params.id);
+
+    const updated = db.get('SELECT * FROM vips WHERE id = ?', req.params.id);
+
+    res.json(response(200, '升级成功', {
+      ...updated,
+      totalRecharge: updated.total_recharge,
+      totalSpent: updated.total_spent || 0,
+      totalOrders: updated.total_orders
+    }));
+  } catch (err) {
+    res.json(response(500, '升级失败'));
   }
 });
 
